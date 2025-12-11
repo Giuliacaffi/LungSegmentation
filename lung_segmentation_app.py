@@ -8,34 +8,96 @@ from monai.networks.nets import UNet
 from monai.networks.layers import Norm
 
 PATCH_SIZE = (256, 256)
+
+# ----------------------------------------------------------
+# CONFIGURAZIONE PAGINA (solo layout)
+# ----------------------------------------------------------
+st.set_page_config(
+    page_title="Lung Segmentation App",
+    layout="wide",
+)
+
+# ----------------------------------------------------------
+# STILI PERSONALIZZATI (solo colori e testo)
+# ----------------------------------------------------------
+custom_css = """
+<style>
+/* Sfondo principale con gradiente molto leggero */
+.main {
+    background: linear-gradient(135deg, #f4f6fb 0%, #eef7ff 50%, #f7f9fc 100%);
+}
+
+/* Contenitore centrale */
+.block-container {
+    background-color: rgba(255, 255, 255, 0.92);
+    border-radius: 16px;
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+/* Titolo principale */
+h1 {
+    text-align: center;
+    font-weight: 700 !important;
+    color: #1f2933;
+    letter-spacing: 0.03em;
+}
+
+/* Testo normale */
+p, label, span, div {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+
+/* Sottotitoli (es. st.subheader) */
+h2, h3, h4 {
+    color: #243b53;
+    font-weight: 600;
+}
+
+/* Card dei risultati */
+.result-card {
+    background-color: #ffffff;
+    padding: 1.2rem 1.4rem;
+    border-radius: 14px;
+    border: 1px solid #d8e2f2;
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+}
+
+/* Radio e file uploader più “morbidi” */
+div[data-baseweb="radio"] > div {
+    background-color: #ffffff;
+    border-radius: 10px;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid #e1e7f5;
+}
+
+/* Nasconde dettagli file nel file_uploader */
+div[data-testid="stFileUploader"] ul {
+    display: none !important;
+}
+div[data-testid="stFileUploader"] section[data-testid="stFileUploaderFileDetails"],
+div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"],
+div[data-testid="stFileUploader"] span[data-testid="stFileUploaderFileLabel"] {
+    display: none !important;
+}
+</style>
+"""
+st.markdown(custom_css, unsafe_allow_html=True)
+
 # ----------------------------------------------------------
 # 1. LOAD MODEL
 # ----------------------------------------------------------
-
-
 @st.cache_resource
 def load_model():
     model = UNet(
-        # Image dimensions
-        spatial_dims=2,               #CODE
-        
-        # How many input channels?
-        in_channels=1,                #CODE (grayscale X-ray)
-        
-        # How many output channels? (That is, how many classes to recognize?)
-        out_channels=1,               #CODE (binary mask)
-        
-        # Feature maps at each level of the net
-        channels=(16, 32, 64, 128, 256),   #CODE
-        
-        # Downsampling factors at each level
-        strides=(2, 2, 2, 2),         #CODE
-
-        # Number of residual blocks
-        num_res_units=2,              #CODE
-
-        # Normalization to be used after convolutions
-        norm=Norm.BATCH,             #CODE
+        spatial_dims=2,
+        in_channels=1,                # grayscale X-ray
+        out_channels=1,               # binary mask
+        channels=(16, 32, 64, 128, 256),
+        strides=(2, 2, 2, 2),
+        num_res_units=2,
+        norm=Norm.BATCH,
     )
     state_dict = torch.load("best_metric_model.pth", map_location="cpu")
     model.load_state_dict(state_dict)
@@ -45,33 +107,19 @@ def load_model():
 # ----------------------------------------------------------
 # 3. PREPROCESSING
 # ----------------------------------------------------------
-
-
 def preprocess(pil_image: Image.Image):
-    # 1) Forza a 1 canale (equivalente a prendere il primo canale in Kaggle)
     pil_image = pil_image.convert("L")  # PNG -> grayscale
-
-    # 2) PIL -> numpy float32, shape (H, W)
     img = np.array(pil_image).astype(np.float32)
-
-    # 3) Resize a PATCH_SIZE (come Resized + ResizeWithPadOrCropd per l'immagine)
     img_resized = cv2.resize(img, PATCH_SIZE, interpolation=cv2.INTER_NEAREST)
 
-    # 4) Normalizza [0, 255] -> [0, 1] (come ScaleIntensityRanged)
     img_resized = np.clip(img_resized, 0, 255)
     img_resized = img_resized / 255.0
 
-    # 5) Aggiungi dimensione canale: (H, W) -> (1, H, W)
-    img_resized = np.expand_dims(img_resized, axis=0)
+    img_resized = np.expand_dims(img_resized, axis=0)   # (1, H, W)
+    img_resized = np.expand_dims(img_resized, axis=0)   # (1, 1, H, W)
 
-    # 6) Aggiungi batch: (1, H, W) -> (1, 1, H, W)
-    img_resized = np.expand_dims(img_resized, axis=0)
-
-    # 7) Numpy -> torch tensor
     x = torch.from_numpy(img_resized).float()
-
     return x
-
 
 def postprocess(logits: torch.Tensor):
     """
@@ -81,23 +129,15 @@ def postprocess(logits: torch.Tensor):
         mask_img: PIL.Image (0-255)
         mask_np:  np.ndarray (H, W) with values {0,1}
     """
-
-    # Move to CPU numpy
     if logits.ndim != 4:
         raise ValueError(f"Expected logits shape (B, C, H, W), got {logits.shape}")
 
-    # If multi-class (C>1), use argmax to get class labels
     if logits.shape[1] > 1:
-        # (B, 2, H, W) -> (B, 1, H, W) with classes {0,1}
         mask_tensor = torch.argmax(logits, dim=1, keepdim=True).float()
     else:
-        # Binary case: apply threshold 0.5
         mask_tensor = (logits > 0.5).float()
 
-    # Take first sample of batch
-    mask_np = mask_tensor[0, 0].detach().cpu().numpy()  # (H, W), values {0,1}
-
-    # Convert to 0-255 uint8 image
+    mask_np = mask_tensor[0, 0].detach().cpu().numpy()
     mask_img = Image.fromarray((mask_np * 255).astype(np.uint8))
 
     return mask_img, mask_np
@@ -105,28 +145,8 @@ def postprocess(logits: torch.Tensor):
 # ----------------------------------------------------------
 # 5. STREAMLIT APP
 # ----------------------------------------------------------
-
 st.title("Lung Segmentation App")
 st.write("Carica una RX torace e segmentiamo i polmoni.")
-
-hide_file_details = """
-    <style>
-    /* Nasconde qualunque lista di file caricati dentro il file_uploader */
-    div[data-testid="stFileUploader"] ul {
-        display: none !important;
-    }
-
-    /* Nasconde eventuali dettagli file in altre versioni */
-    div[data-testid="stFileUploader"] section[data-testid="stFileUploaderFileDetails"],
-    div[data-testid="stFileUploader"] div[data-testid="stFileUploaderFile"],
-    div[data-testid="stFileUploader"] span[data-testid="stFileUploaderFileLabel"] {
-        display: none !important;
-    }
-    </style>
-"""
-st.markdown(hide_file_details, unsafe_allow_html=True)
-
-
 
 uploaded_file = st.file_uploader("Carica un PNG RX", type=["png"])
 
@@ -134,7 +154,6 @@ if uploaded_file is not None:
     st.markdown(f"**Visualizzando:** *{uploaded_file.name}*")
     image = Image.open(uploaded_file)
 
-    # Compute prediction once (we'll use it in both branches)
     model = load_model()
     x = preprocess(image)
     st.write("Shape input modello:", x.shape)  # es: torch.Size([1, 1, 256, 256])
@@ -142,10 +161,8 @@ if uploaded_file is not None:
     with torch.no_grad():
         y = model(x)
 
-    # Prediction mask (PIL + numpy 0/1)
     pred_mask_img, pred_mask_np = postprocess(y)
 
-    # Overlay prediction on image (calcolata una volta sola)
     overlay = cv2.addWeighted(
         np.array(image.resize(pred_mask_img.size).convert("RGB")),
         0.7,
@@ -154,7 +171,8 @@ if uploaded_file is not None:
         0
     )
 
-    # 🔹 Prima riga: Input – Pred – Overlay
+    # Card per i risultati
+    st.markdown('<div class="result-card">', unsafe_allow_html=True)
     st.subheader("Risultati della segmentazione")
     colA, colB, colC = st.columns(3)
 
@@ -166,19 +184,15 @@ if uploaded_file is not None:
 
     with colC:
         st.image(overlay, caption="Overlay predizione", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    # 🔹 Chiedi se vuole confrontare con una maschera GT
     compare_option = st.radio(
         "Vuoi confrontare la predizione con una maschera esistente?",
         ("No", "Sì"),
         index=0
     )
 
-    if compare_option == "No":
-        pass
-
-    else:
-        # ✅ Ask for GT mask, and only then show everything together
+    if compare_option == "Sì":
         gt_file = st.file_uploader(
             "Carica la maschera ground truth (PNG)",
             type=["png"],
@@ -189,22 +203,18 @@ if uploaded_file is not None:
             st.info("Carica una maschera per vedere il confronto con la predizione.")
         else:
             gt_img = Image.open(gt_file).convert("L")
-            # Resize GT to match prediction size
             gt_img_resized = gt_img.resize(pred_mask_img.size, resample=Image.NEAREST)
             gt_np = np.array(gt_img_resized)
 
-            # Binarize GT: anything > 0 becomes 1
             gt_bin = (gt_np > 0).astype(np.uint8)
 
-            # Compute Dice
             intersection = np.logical_and(pred_mask_np == 1, gt_bin == 1).sum()
             pred_sum = (pred_mask_np == 1).sum()
             gt_sum = (gt_bin == 1).sum()
             dice = (2.0 * intersection) / (pred_sum + gt_sum + 1e-8)
 
-            st.markdown(f"**Dice coefficient (pred vs GT):** `{dice:.3f}`")
+            st.markdown(f"**Dice coefficient (pred vs GT):** {dice:.3f}")
 
-            # Show GT, prediction, and combined visualization
             st.subheader("Confronto predizione vs ground truth")
             col1, col2, col3 = st.columns(3)
             with col1:
